@@ -1,4 +1,10 @@
-export default function TransButton({ text, type = "button", onClick }) {
+type ButtonProps = {
+  text: string;
+  type?: "button" | "submit" | "reset";
+  onClick?: () => void;
+};
+
+function TransButton({ text, type = "button", onClick }: ButtonProps) {
   return (
     <button
       type={type}
@@ -16,3 +22,5 @@ export default function TransButton({ text, type = "button", onClick }) {
     </button>
   );
 }
+
+export default TransButton

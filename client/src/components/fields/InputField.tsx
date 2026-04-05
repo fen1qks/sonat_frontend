@@ -1,15 +1,19 @@
 type InputFieldProps = {
-  type?: string;
+  type?: React.HTMLInputTypeAttribute;
   placeholder: string;
   required?: boolean;
   name?: string;
+  value?: string;
+  onChange?: (e: React.ChangeEvent<HTMLInputElement>) => void;
 };
 
-export default function InputField({
+function InputField({
   type = "text",
   placeholder,
   required = false,
   name,
+  value,
+  onChange,
 }: InputFieldProps) {
   return (
     <div className="relative w-[381px]">
@@ -17,6 +21,9 @@ export default function InputField({
         type={type}
         name={name}
         placeholder={placeholder}
+        value={value}
+        onChange={onChange}
+        required={required}
         className="bg-[rgba(255,255,255,0.83)] h-[50px] w-full rounded-[12px] text-[#191010] text-[18px] text-center outline-none placeholder:text-[#191010]"
       />
 
@@ -28,3 +35,5 @@ export default function InputField({
     </div>
   );
 }
+
+export default InputField
