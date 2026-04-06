@@ -6,6 +6,7 @@ import MusicBanner from "../banner/MusicBanner";
 import AccountMenu from "../menu/AccountMenu";
 import { API_BASE_URL } from "../../config/api";
 import type { ActiveView } from "../../pages/MainPage";
+import {usePlayer } from "../../context/PlayBarContext.tsx";
 
 type SearchType = "spotify" | "youtube";
 
@@ -19,8 +20,12 @@ type Track = {
 };
 
 type HomeFormProps = {
-  tracks?: Track[];
   setActiveView: React.Dispatch<React.SetStateAction<ActiveView>>;
+};
+
+type SearchRequest = {
+  searchType: SearchType;
+  searchValue: string;
 };
 
 function getCookie(name: string): string | null {
@@ -37,10 +42,12 @@ function getCookie(name: string): string | null {
   return null;
 }
 
-function HomeForm({ tracks = [], setActiveView }: HomeFormProps) {
+function HomeForm({ setActiveView }: HomeFormProps) {
   const [searchValue, setSearchValue] = useState<string>("");
   const [searchType, setSearchType] = useState<SearchType>("youtube");
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
+  const [tracks, setTracks] = useState<Track[]>([]);
+  const { playTrack } = usePlayer();
 
   const accountRef = useRef<HTMLDivElement | null>(null);
 
@@ -48,16 +55,31 @@ function HomeForm({ tracks = [], setActiveView }: HomeFormProps) {
     setSearchType((prev) => (prev === "youtube" ? "spotify" : "youtube"));
   };
 
-  const handleSearch = () => {
+  const handleSearch = async () => {
     const trimmedValue = searchValue.trim();
     if (!trimmedValue) return;
 
+    const body: SearchRequest = {
+      searchType,
+      searchValue: trimmedValue,
+    };
+
+     const response = await fetch(`${API_BASE_URL}/search/`, {
+       method: "POST",
+       headers: {
+         "Content-Type": "application/json",
+         "X-CSRFToken": getCookie("csrftoken") || "",
+       },
+       credentials: "include",
+       body: JSON.stringify(body),
+     });
+
+     const data: Track[] = await response.json();
+     setTracks(data);
+
+
     console.log("Search query:", trimmedValue);
     console.log("Search type:", searchType);
-  };
-
-  const handlePlayTrack = (track: Track) => {
-    console.log("Play track:", track);
   };
 
   const handleAddTrack = (track: Track) => {
@@ -161,7 +183,10 @@ function HomeForm({ tracks = [], setActiveView }: HomeFormProps) {
                 title={track.title}
                 author={track.author}
                 onAdd={() => handleAddTrack(track)}
-                onPlay={() => handlePlayTrack(track)}
+                onPlay={() => {
+                  console.log("clicked track", track);
+                  playTrack(track, tracks);
+                }}
               />
             ))}
           </div>
