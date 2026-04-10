@@ -1,11 +1,102 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePlayer } from "./PlayBarContext.tsx";
+import type { Track } from "../types/track";
+
+type YTPlayerState = {
+  PLAYING: number;
+  PAUSED: number;
+  ENDED: number;
+};
+
+type YTPlayerInstance = {
+  loadVideoById: (videoId: string) => void;
+  playVideo: () => void;
+  pauseVideo: () => void;
+  seekTo: (seconds: number, allowSeekAhead?: boolean) => void;
+  getCurrentTime: () => number;
+  getDuration: () => number;
+  setVolume: (volume: number) => void;
+  destroy?: () => void;
+};
+
+type YTPlayerReadyEvent = {
+  target: YTPlayerInstance;
+};
+
+type YTPlayerStateChangeEvent = {
+  data: number;
+  target: YTPlayerInstance;
+};
+
+type YTPlayerErrorEvent = {
+  data: number;
+  target: YTPlayerInstance;
+};
+
+type YTPlayerConstructor = new (
+  element: HTMLElement,
+  options: {
+    height: string;
+    width: string;
+    videoId: string;
+    playerVars: {
+      controls: number;
+      autoplay: number;
+      disablekb: number;
+      fs: number;
+      modestbranding: number;
+      rel: number;
+      enablejsapi: number;
+    };
+    events: {
+      onReady?: (event: YTPlayerReadyEvent) => void;
+      onStateChange?: (event: YTPlayerStateChangeEvent) => void;
+      onError?: (event: YTPlayerErrorEvent) => void;
+    };
+  }
+) => YTPlayerInstance;
 
 declare global {
   interface Window {
-    YT: any;
+    YT?: {
+      Player?: YTPlayerConstructor;
+      PlayerState: YTPlayerState;
+    };
     onYouTubeIframeAPIReady?: () => void;
   }
+}
+
+let youtubeApiPromise: Promise<void> | null = null;
+
+function loadYouTubeIframeApi(): Promise<void> {
+  if (window.YT?.Player) {
+    return Promise.resolve();
+  }
+
+  if (youtubeApiPromise) {
+    return youtubeApiPromise;
+  }
+
+  youtubeApiPromise = new Promise((resolve) => {
+    const existingScript = document.querySelector(
+      'script[src="https://www.youtube.com/iframe_api"]'
+    );
+
+    window.onYouTubeIframeAPIReady = () => {
+      console.log("[YouTubePlayer] iframe api ready");
+      resolve();
+    };
+
+    if (existingScript) {
+      return;
+    }
+
+    const tag = document.createElement("script");
+    tag.src = "https://www.youtube.com/iframe_api";
+    document.body.appendChild(tag);
+  });
+
+  return youtubeApiPromise;
 }
 
 function formatTime(totalSeconds: number): string {
@@ -19,7 +110,7 @@ export default function YouTubePlayer() {
   const {
     currentTrack,
     isPlaying,
-    playerRef,
+    youtubePlayerRef,
     setCurrentTime,
     setDuration,
     setProgressPercent,
@@ -29,16 +120,51 @@ export default function YouTubePlayer() {
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const pollRef = useRef<number | null>(null);
+  const loadedSourceIdRef = useRef<string | null>(null);
+  const currentTrackRef = useRef<Track | null>(currentTrack);
+  const [isPlayerReady, setIsPlayerReady] = useState(false);
 
   useEffect(() => {
-    function createPlayer() {
-      if (!containerRef.current || !window.YT?.Player) return;
-      if (playerRef.current) return;
+    currentTrackRef.current = currentTrack;
+  }, [currentTrack]);
 
-      playerRef.current = new window.YT.Player(containerRef.current, {
+  useEffect(() => {
+    let cancelled = false;
+
+    async function init() {
+      if (
+        !currentTrack ||
+        currentTrack.sourceType !== "youtube" ||
+        !currentTrack.sourceId
+      ) {
+        return;
+      }
+
+      if (youtubePlayerRef.current) {
+        return;
+      }
+
+      await loadYouTubeIframeApi();
+
+      if (
+        cancelled ||
+        !containerRef.current ||
+        !window.YT?.Player ||
+        youtubePlayerRef.current
+      ) {
+        return;
+      }
+
+      loadedSourceIdRef.current = currentTrack.sourceId;
+
+      console.log("[YouTubePlayer] createPlayer()", {
+        sourceId: currentTrack.sourceId,
+      });
+
+      youtubePlayerRef.current = new window.YT.Player(containerRef.current, {
         height: "200",
         width: "200",
-        videoId: currentTrack?.youtubeId || "",
+        videoId: currentTrack.sourceId,
         playerVars: {
           controls: 0,
           autoplay: 0,
@@ -49,70 +175,137 @@ export default function YouTubePlayer() {
           enablejsapi: 1,
         },
         events: {
-          onReady: () => {},
-          onStateChange: (event: any) => {
-            const state = event.data;
-            if (state === window.YT.PlayerState.PLAYING) {
+          onReady: () => {
+            console.log("[YouTubePlayer] onReady");
+            setIsPlayerReady(true);
+          },
+          onStateChange: (event: YTPlayerStateChangeEvent) => {
+            const activeTrack = currentTrackRef.current;
+
+            if (
+              !activeTrack ||
+              activeTrack.sourceType !== "youtube" ||
+              !activeTrack.sourceId
+            ) {
+              return;
+            }
+
+            if (loadedSourceIdRef.current !== activeTrack.sourceId) {
+              return;
+            }
+
+            console.log("[YouTubePlayer] onStateChange", event.data);
+
+            if (event.data === window.YT?.PlayerState.PLAYING) {
               setIsPlaying(true);
             }
-            if (state === window.YT.PlayerState.PAUSED) {
+
+            if (event.data === window.YT?.PlayerState.PAUSED) {
               setIsPlaying(false);
             }
-            if (state === window.YT.PlayerState.ENDED) {
+
+            if (event.data === window.YT?.PlayerState.ENDED) {
               playNext();
             }
+          },
+          onError: (event: YTPlayerErrorEvent) => {
+            console.log("[YouTubePlayer] onError", event.data);
           },
         },
       });
     }
 
-    if (window.YT?.Player) {
-      createPlayer();
+    init();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentTrack?.sourceId, currentTrack?.sourceType, playNext, setIsPlaying, youtubePlayerRef]);
+
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) {
+        window.clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+
+      if (youtubePlayerRef.current?.destroy) {
+        console.log("[YouTubePlayer] destroy()");
+        youtubePlayerRef.current.destroy();
+      }
+
+      youtubePlayerRef.current = null;
+      loadedSourceIdRef.current = null;
+      setIsPlayerReady(false);
+    };
+  }, [youtubePlayerRef]);
+
+  useEffect(() => {
+    if (
+      !currentTrack ||
+      currentTrack.sourceType !== "youtube" ||
+      !currentTrack.sourceId ||
+      !youtubePlayerRef.current ||
+      !isPlayerReady
+    ) {
       return;
     }
 
-    const existingScript = document.querySelector('script[src="https://www.youtube.com/iframe_api"]');
-    if (!existingScript) {
-      const tag = document.createElement("script");
-      tag.src = "https://www.youtube.com/iframe_api";
-      document.body.appendChild(tag);
+    if (loadedSourceIdRef.current === currentTrack.sourceId) {
+      return;
     }
 
-    window.onYouTubeIframeAPIReady = createPlayer;
-  }, [currentTrack?.youtubeId, playerRef, playNext, setIsPlaying]);
+    console.log("[YouTubePlayer] loadVideoById()", {
+      sourceId: currentTrack.sourceId,
+    });
+
+    youtubePlayerRef.current.loadVideoById(currentTrack.sourceId);
+    loadedSourceIdRef.current = currentTrack.sourceId;
+  }, [currentTrack?.sourceId, currentTrack?.sourceType, isPlayerReady, youtubePlayerRef]);
 
   useEffect(() => {
-    if (!playerRef.current || !currentTrack?.youtubeId) return;
-    playerRef.current.loadVideoById(currentTrack.youtubeId);
+    if (
+      !currentTrack ||
+      currentTrack.sourceType !== "youtube" ||
+      !youtubePlayerRef.current ||
+      !isPlayerReady
+    ) {
+      return;
+    }
+
+    console.log("[YouTubePlayer] sync play state", {
+      isPlaying,
+      sourceId: currentTrack.sourceId,
+    });
 
     if (isPlaying) {
-      playerRef.current.playVideo();
+      youtubePlayerRef.current.playVideo();
     } else {
-      playerRef.current.pauseVideo();
+      youtubePlayerRef.current.pauseVideo();
     }
-  }, [currentTrack?.youtubeId]);
+  }, [isPlaying, currentTrack?.sourceId, currentTrack?.sourceType, isPlayerReady, youtubePlayerRef]);
 
   useEffect(() => {
-    if (!playerRef.current) return;
-
-    if (isPlaying) {
-      playerRef.current.playVideo();
-    } else {
-      playerRef.current.pauseVideo();
+    if (!currentTrack || currentTrack.sourceType !== "youtube") {
+      if (youtubePlayerRef.current) {
+        console.log("[YouTubePlayer] non-youtube track -> pauseVideo()");
+        youtubePlayerRef.current.pauseVideo();
+      }
+      return;
     }
-  }, [isPlaying, playerRef]);
 
-  useEffect(() => {
+    if (!youtubePlayerRef.current || !isPlayerReady) return;
+
     if (pollRef.current) {
       window.clearInterval(pollRef.current);
       pollRef.current = null;
     }
 
     pollRef.current = window.setInterval(() => {
-      if (!playerRef.current) return;
+      if (!youtubePlayerRef.current) return;
 
-      const current = playerRef.current.getCurrentTime?.() ?? 0;
-      const total = playerRef.current.getDuration?.() ?? 0;
+      const current = youtubePlayerRef.current.getCurrentTime?.() ?? 0;
+      const total = youtubePlayerRef.current.getDuration?.() ?? 0;
 
       setCurrentTime(formatTime(current));
       setDuration(formatTime(total));
@@ -127,9 +320,18 @@ export default function YouTubePlayer() {
     return () => {
       if (pollRef.current) {
         window.clearInterval(pollRef.current);
+        pollRef.current = null;
       }
     };
-  }, [playerRef, setCurrentTime, setDuration, setProgressPercent]);
+  }, [
+    currentTrack?.sourceId,
+    currentTrack?.sourceType,
+    isPlayerReady,
+    youtubePlayerRef,
+    setCurrentTime,
+    setDuration,
+    setProgressPercent,
+  ]);
 
   return (
     <div

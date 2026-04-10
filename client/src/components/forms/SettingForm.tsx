@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from "react";
 import SonatText from "../text/SonatText";
-import spotify_logo from "../../assets/images/logo/spotify_logo.png";
 import telegram_logo from "../../assets/images/logo/telegram_logo.png";
 import refresh_icon from "../../assets/images/logo/refresh_icon.png";
 import { API_BASE_URL } from "../../config/api";
@@ -12,8 +11,12 @@ type ProfileResponse = {
   last_name: string;
   description: string;
   birth_day: string;
-  spotify_link: boolean;
   telegram_link: boolean;
+};
+
+type TelegramCodeResponse = {
+  code?: string;
+  error?: string;
 };
 
 type FormData = {
@@ -45,8 +48,6 @@ type SidePanelProps = {
   children: React.ReactNode;
   onClose: () => void;
 };
-
-type ActivePanel = "telegram" | "spotify" | null;
 
 function getCookie(name: string): string | null {
   const cookies = document.cookie.split(";");
@@ -126,17 +127,16 @@ function SettingsForm({ setActiveView }: SettingsFormProps) {
     description: "",
   });
 
-  const [spotifyConnected, setSpotifyConnected] = useState(false);
   const [telegramConnected, setTelegramConnected] = useState(false);
-  const [activePanel, setActivePanel] = useState<ActivePanel>(null);
-  const [telegramCode, setTelegramCode] = useState("5F8K-21QZ");
-  const [spotifyLink, setSpotifyLink] = useState("");
+  const [activePanel, setActivePanel] = useState<"telegram" | null>(null);
+  const [telegramCode, setTelegramCode] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [telegramLoading, setTelegramLoading] = useState(false);
   const [message, setMessage] = useState("");
+  const [telegramMessage, setTelegramMessage] = useState("");
 
-  const socialIconClass = "relative z-10 h-[58px] w-[58px] object-contain";
-  const telegramIconClass = `${socialIconClass} scale-225`;
+  const telegramIconClass = "relative z-10 h-[58px] w-[58px] scale-175 object-contain";
 
   function handleChange(
     e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
@@ -156,6 +156,7 @@ function SettingsForm({ setActiveView }: SettingsFormProps) {
           method: "GET",
           headers: {
             "Content-Type": "application/json",
+            "X-CSRFToken": getCookie("csrftoken") || "",
           },
           credentials: "include",
         });
@@ -175,12 +176,7 @@ function SettingsForm({ setActiveView }: SettingsFormProps) {
           description: data.description || "",
         });
 
-        setSpotifyConnected(Boolean(data.spotify_link));
         setTelegramConnected(Boolean(data.telegram_link));
-
-        if (data.spotify_link) {
-          setSpotifyLink("Spotify connected");
-        }
       } catch {
         setMessage("Server error while loading profile");
       } finally {
@@ -222,28 +218,48 @@ function SettingsForm({ setActiveView }: SettingsFormProps) {
     }
   }
 
-  function handleTelegramConnect() {
-    setMessage("");
-    setActivePanel((prev) => (prev === "telegram" ? null : "telegram"));
-  }
-
-  function handleSpotifyConnect() {
-    setMessage("");
-    setActivePanel((prev) => (prev === "spotify" ? null : "spotify"));
-  }
-
-  function generateTelegramCode() {
-    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    let code = "";
-
-    for (let i = 0; i < 8; i++) {
-      if (i === 4) {
-        code += "-";
-      }
-      code += chars[Math.floor(Math.random() * chars.length)];
+  async function requestTelegramCode() {
+    if (telegramConnected) {
+      setTelegramMessage("Telegram already connected");
+      return;
     }
 
-    setTelegramCode(code);
+    setTelegramLoading(true);
+    setTelegramMessage("");
+    setMessage("");
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/telegram_code/`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": getCookie("csrftoken") || "",
+        },
+        credentials: "include",
+      });
+
+      const data: TelegramCodeResponse = await response.json();
+
+      if (!response.ok) {
+        setTelegramMessage(data.error || "Failed to generate Telegram code");
+        return;
+      }
+
+      setTelegramCode(data.code || "");
+      setTelegramMessage("Use this code in Telegram bot to link your account.");
+    } catch {
+      setTelegramMessage("Server error while generating Telegram code");
+    } finally {
+      setTelegramLoading(false);
+    }
+  }
+
+  async function handleTelegramConnect() {
+    setActivePanel((prev) => (prev === "telegram" ? null : "telegram"));
+
+    if (!telegramConnected) {
+      await requestTelegramCode();
+    }
   }
 
   return (
@@ -257,57 +273,37 @@ function SettingsForm({ setActiveView }: SettingsFormProps) {
           icon={telegram_logo}
           onClose={() => setActivePanel(null)}
         >
-          <div className="rounded-[24px] bg-[rgba(255,255,255,0.04)] p-[16px]">
-            <p className="text-[15px] text-white/80">
-              Use this code in Telegram bot to link your account.
-            </p>
+          <div className="rounded-[20px] bg-[rgba(255,255,255,0.04)] p-[16px]">
+            {telegramConnected ? (
+              <p className="text-[15px] text-[#7CFF9E]">
+                Telegram account already connected.
+              </p>
+            ) : (
+              <>
+                <p className="text-[15px] text-white/80">
+                  {telegramMessage ||
+                    "Use this code in Telegram bot to link your account."}
+                </p>
 
-            <div className="mt-[16px] rounded-[18px] bg-black px-[16px] py-[14px] text-center text-[28px] font-semibold tracking-[2px] text-white">
-              {telegramCode}
-            </div>
+                <div className="mt-[16px] rounded-[18px] bg-black px-[16px] py-[14px] text-center text-[28px] font-semibold tracking-[2px] text-white">
+                  {telegramLoading ? "Loading..." : telegramCode || "---- ----"}
+                </div>
 
-            <button
-              type="button"
-              onClick={generateTelegramCode}
-              className="mt-[16px] flex w-full cursor-pointer items-center justify-center gap-[10px] rounded-[18px] bg-black px-[16px] py-[12px] text-white"
-            >
-              <img
-                src={refresh_icon}
-                alt="Refresh"
-                className="h-[22px] w-[22px] object-contain"
-              />
-              Generate new code
-            </button>
-          </div>
-        </SidePanel>
-      )}
-
-      {activePanel === "spotify" && (
-        <SidePanel
-          side="right"
-          title="Spotify"
-          icon={spotify_logo}
-          onClose={() => setActivePanel(null)}
-        >
-          <div className="rounded-[24px] bg-[rgba(255,255,255,0.04)] p-[16px]">
-            <p className="text-[15px] text-white/80">
-              Paste Spotify profile or auth link here.
-            </p>
-
-            <input
-              type="text"
-              value={spotifyLink}
-              onChange={(e) => setSpotifyLink(e.target.value)}
-              placeholder="https://open.spotify.com/..."
-              className="mt-[16px] w-full rounded-[18px] border border-white/20 bg-black px-[14px] py-[12px] text-[16px] text-white outline-none"
-            />
-
-            <button
-              type="button"
-              className="mt-[16px] w-full cursor-pointer rounded-[18px] bg-[#0f0f0f] px-[16px] py-[12px] text-white"
-            >
-              Connect Spotify
-            </button>
+                <button
+                  type="button"
+                  onClick={requestTelegramCode}
+                  disabled={telegramLoading}
+                  className="mt-[16px] flex w-full cursor-pointer items-center justify-center gap-[10px] rounded-[18px] bg-black px-[16px] py-[12px] text-white disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  <img
+                    src={refresh_icon}
+                    alt="Refresh"
+                    className="h-[22px] w-[22px] object-contain"
+                  />
+                  {telegramLoading ? "Generating..." : "Generate new code"}
+                </button>
+              </>
+            )}
           </div>
         </SidePanel>
       )}
@@ -366,11 +362,11 @@ function SettingsForm({ setActiveView }: SettingsFormProps) {
                     Link account
                   </div>
 
-                  <div className="absolute bottom-[20px] left-[95px] right-[95px] flex justify-between">
+                  <div className="absolute bottom-[20px] left-1/2 -translate-x-1/2">
                     <button
                       type="button"
                       onClick={handleTelegramConnect}
-                      className="relative flex h-[86px] w-[86px] cursor-pointer items-center justify-center rounded-full bg-black"
+                      className="relative flex h-[70px] w-[70px] cursor-pointer items-center justify-center rounded-full bg-black"
                     >
                       <div className="absolute inset-0 rounded-full border-2 border-[rgba(255,255,255,0.25)] shadow-[0px_4px_4px_0px_rgba(0,0,0,0.25)]" />
                       <img
@@ -379,30 +375,11 @@ function SettingsForm({ setActiveView }: SettingsFormProps) {
                         className={telegramIconClass}
                       />
                     </button>
-
-                    <button
-                      type="button"
-                      onClick={handleSpotifyConnect}
-                      className="relative flex h-[86px] w-[86px] cursor-pointer items-center justify-center rounded-full bg-black"
-                    >
-                      <div className="absolute inset-0 rounded-full border-2 border-[rgba(255,255,255,0.25)] shadow-[0px_4px_4px_0px_rgba(0,0,0,0.25)]" />
-                      <img
-                        src={spotify_logo}
-                        alt="Spotify"
-                        className={socialIconClass}
-                      />
-                    </button>
                   </div>
 
                   {telegramConnected && (
-                    <div className="absolute left-[24px] top-[20px] rounded-[16px] bg-[rgba(9,184,67,0.15)] px-[12px] py-[4px] text-[14px] text-[#7CFF9E]">
-                      Telegram connected
-                    </div>
-                  )}
-
-                  {spotifyConnected && (
                     <div className="absolute right-[24px] top-[20px] rounded-[16px] bg-[rgba(9,184,67,0.15)] px-[12px] py-[4px] text-[14px] text-[#7CFF9E]">
-                      Spotify connected
+                      Telegram connected
                     </div>
                   )}
                 </div>

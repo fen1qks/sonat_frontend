@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import SearchBar from "../search/SearchBar";
 import ChangeTypeSearchButton from "../button/ChangeTypeSearchButton";
 import AccountButton from "../button/AccountButton";
@@ -6,21 +7,14 @@ import MusicBanner from "../banner/MusicBanner";
 import AccountMenu from "../menu/AccountMenu";
 import { API_BASE_URL } from "../../config/api";
 import type { ActiveView } from "../../pages/MainPage";
-import {usePlayer } from "../../context/PlayBarContext.tsx";
-
-type SearchType = "spotify" | "youtube";
-
-type Track = {
-  id: number | string;
-  title: string;
-  author: string;
-  cover: string;
-  youtubeId?: string;
-  watchUrl?: string;
-};
+import { usePlayer } from "../../context/PlayBarContext.tsx";
+import type { SearchType, Track } from "../../types/track";
 
 type HomeFormProps = {
   setActiveView: React.Dispatch<React.SetStateAction<ActiveView>>;
+  tracks: Track[];
+  setTracks: React.Dispatch<React.SetStateAction<Track[]>>;
+  onAddToLibrary: (track: Track) => void | Promise<void>;
 };
 
 type SearchRequest = {
@@ -42,14 +36,57 @@ function getCookie(name: string): string | null {
   return null;
 }
 
-function HomeForm({ setActiveView }: HomeFormProps) {
-  const [searchValue, setSearchValue] = useState<string>("");
+function normalizeTracks(data: unknown, searchType: SearchType): Track[] {
+  if (!Array.isArray(data)) return [];
+
+  return data
+    .map((item): Track | null => {
+      if (!item || typeof item !== "object") return null;
+
+      const raw = item as Partial<Track>;
+
+      const fallbackSourceId =
+        typeof raw.sourceId === "string"
+          ? raw.sourceId
+          : typeof raw.id === "string"
+            ? raw.id
+            : undefined;
+
+      if (!raw.title || !raw.author) {
+        return null;
+      }
+
+      return {
+        id: raw.id ?? fallbackSourceId ?? Math.random().toString(36),
+        title: raw.title,
+        author: raw.author,
+        cover: raw.cover,
+        watchUrl: raw.watchUrl,
+        sourceId: fallbackSourceId,
+        sourceType:
+          raw.sourceType === "youtube" || raw.sourceType === "spotify"
+            ? raw.sourceType
+            : searchType,
+      };
+    })
+    .filter((track): track is Track => Boolean(track));
+}
+
+function HomeForm({
+  setActiveView,
+  tracks,
+  setTracks,
+  onAddToLibrary,
+}: HomeFormProps) {
+  const [searchValue, setSearchValue] = useState("");
   const [searchType, setSearchType] = useState<SearchType>("youtube");
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
-  const [tracks, setTracks] = useState<Track[]>([]);
-  const { playTrack } = usePlayer();
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchError, setSearchError] = useState("");
 
+  const { playTrack } = usePlayer();
   const accountRef = useRef<HTMLDivElement | null>(null);
+  const navigate = useNavigate();
 
   const handleToggleSearchType = () => {
     setSearchType((prev) => (prev === "youtube" ? "spotify" : "youtube"));
@@ -57,33 +94,50 @@ function HomeForm({ setActiveView }: HomeFormProps) {
 
   const handleSearch = async () => {
     const trimmedValue = searchValue.trim();
-    if (!trimmedValue) return;
+    if (!trimmedValue || isSearching) return;
+
+    setIsSearching(true);
+    setSearchError("");
 
     const body: SearchRequest = {
       searchType,
       searchValue: trimmedValue,
     };
 
-     const response = await fetch(`${API_BASE_URL}/search/`, {
-       method: "POST",
-       headers: {
-         "Content-Type": "application/json",
-         "X-CSRFToken": getCookie("csrftoken") || "",
-       },
-       credentials: "include",
-       body: JSON.stringify(body),
-     });
+    try {
+      const response = await fetch(`${API_BASE_URL}/search/`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": getCookie("csrftoken") || "",
+        },
+        credentials: "include",
+        body: JSON.stringify(body),
+      });
 
-     const data: Track[] = await response.json();
-     setTracks(data);
+      const data = await response.json();
 
+      if (!response.ok) {
+        setSearchError("Search failed");
+        setTracks([]);
+        return;
+      }
 
-    console.log("Search query:", trimmedValue);
-    console.log("Search type:", searchType);
-  };
+      const normalizedTracks = normalizeTracks(data, searchType);
+      setTracks(normalizedTracks);
 
-  const handleAddTrack = (track: Track) => {
-    console.log("Add track:", track);
+      console.log("[HomeForm] search result", {
+        searchType,
+        query: trimmedValue,
+        count: normalizedTracks.length,
+      });
+    } catch (error) {
+      console.log("[HomeForm] search error", error);
+      setSearchError("Server error while searching");
+      setTracks([]);
+    } finally {
+      setIsSearching(false);
+    }
   };
 
   const handleGoLibrary = () => {
@@ -113,7 +167,7 @@ function HomeForm({ setActiveView }: HomeFormProps) {
       setIsAccountMenuOpen(false);
 
       if (response.ok) {
-        setActiveView("home");
+        navigate("/");
         return;
       }
 
@@ -175,21 +229,38 @@ function HomeForm({ setActiveView }: HomeFormProps) {
         </div>
 
         <div className="w-full rounded-[36px] bg-[rgba(35,72,93,0.82)] px-[24px] py-[26px] shadow-[0px_18px_45px_0px_rgba(0,0,0,0.22)] backdrop-blur-[8px]">
+          {searchError && (
+            <div className="mb-[18px] rounded-[20px] bg-black/40 px-[18px] py-[12px] text-[16px] text-white">
+              {searchError}
+            </div>
+          )}
+
           <div className="flex flex-col gap-[24px]">
             {tracks.slice(0, 4).map((track) => (
               <MusicBanner
-                key={track.id}
+                key={track.sourceId ?? track.id}
                 cover={track.cover}
                 title={track.title}
                 author={track.author}
-                onAdd={() => handleAddTrack(track)}
+                onAdd={() => onAddToLibrary(track)}
                 onPlay={() => {
-                  console.log("clicked track", track);
+                  console.log("[HomeForm] clicked track", {
+                    track,
+                    searchType: track.sourceType,
+                    sourceId: track.sourceId,
+                    id: track.id,
+                  });
                   playTrack(track, tracks);
                 }}
               />
             ))}
           </div>
+
+          {!isSearching && tracks.length === 0 && (
+            <div className="mt-[10px] flex h-[220px] items-center justify-center text-[24px] text-white/80">
+              Start a search to see tracks
+            </div>
+          )}
 
           <div className="mt-[32px] flex justify-center">
             <button
@@ -197,7 +268,9 @@ function HomeForm({ setActiveView }: HomeFormProps) {
               onClick={handleGoLibrary}
               className="min-w-[210px] rounded-[40px] border border-[#09B843]/40 bg-black px-[40px] py-[16px] text-[16px] font-medium tracking-[-0.08px] text-white shadow-[0px_0px_14px_0px_rgba(9,184,67,0.2)]"
             >
-              <span className="leading-[1.45]">Library</span>
+              <span className="leading-[1.45]">
+                {isSearching ? "Searching..." : "Library"}
+              </span>
             </button>
           </div>
         </div>

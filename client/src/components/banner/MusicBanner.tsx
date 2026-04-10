@@ -8,6 +8,8 @@ type MusicBannerProps = {
   author: string;
   onPlay?: () => void;
   onAdd?: () => void;
+  onDelete?: () => void;
+  deleteIcon?: string;
 };
 
 export default function MusicBanner({
@@ -16,6 +18,8 @@ export default function MusicBanner({
   author,
   onPlay,
   onAdd,
+  onDelete,
+  deleteIcon,
 }: MusicBannerProps) {
   const imageSrc = cover && cover.trim() !== "" ? cover : defaultTrackCover;
 
@@ -41,6 +45,25 @@ export default function MusicBanner({
 
       <div className="ml-auto flex items-center gap-[25px]">
         <AddButton onClick={onAdd} />
+
+        {onDelete && (
+          <button
+            type="button"
+            onClick={onDelete}
+            className="relative h-[64px] w-[64px] rounded-full bg-[rgba(255,255,255,0.83)] shadow-[0px_4px_4px_0px_rgba(0,0,0,0.25)] cursor-pointer"
+          >
+            <div className="absolute inset-0 rounded-full border-2 border-[rgba(255,255,255,0.25)]" />
+
+            {deleteIcon && (
+              <img
+                src={deleteIcon}
+                alt="Delete track"
+                className="absolute left-1/2 top-1/2 h-[26px] w-[26px] -translate-x-1/2 -translate-y-1/2 object-contain"
+              />
+            )}
+          </button>
+        )}
+
         <PlayButton onClick={onPlay} />
       </div>
     </div>

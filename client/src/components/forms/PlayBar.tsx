@@ -1,3 +1,4 @@
+import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import defaultTrackCover from "../../assets/images/logo/default_track_cover.png";
 
 type PlayBarProps = {
@@ -13,6 +14,7 @@ type PlayBarProps = {
   onPrev?: () => void;
   onNext?: () => void;
   onAdd?: () => void;
+  onSeek?: (percent: number) => void;
   onVolumeChange?: (volume: number) => void;
   prevIcon?: string;
   nextIcon?: string;
@@ -27,7 +29,7 @@ function CircleControlButton({
   size = "md",
 }: {
   onClick?: () => void;
-  children: React.ReactNode;
+  children: ReactNode;
   size?: "md" | "lg";
 }) {
   const sizeClass = size === "lg" ? "h-[48px] w-[48px]" : "h-[40px] w-[40px]";
@@ -92,14 +94,15 @@ export default function PlayBar({
   title = "Name of track",
   author = "Name author",
   isPlaying = false,
-  currentTime = "0:13",
-  duration = "4:12",
-  progressPercent = 6,
+  currentTime = "0:00",
+  duration = "0:00",
+  progressPercent = 0,
   volumePercent = 100,
   onPlayPause,
   onPrev,
   onNext,
   onAdd,
+  onSeek,
   onVolumeChange,
   prevIcon,
   nextIcon,
@@ -110,6 +113,14 @@ export default function PlayBar({
   const safeProgress = Math.max(0, Math.min(progressPercent, 100));
   const safeVolume = Math.max(0, Math.min(volumePercent, 100));
   const imageSrc = cover && cover.trim() !== "" ? cover : defaultTrackCover;
+
+  function handleSeekClick(event: ReactMouseEvent<HTMLDivElement>) {
+    if (!onSeek) return;
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const percent = ((event.clientX - rect.left) / rect.width) * 100;
+    onSeek(Math.max(0, Math.min(100, percent)));
+  }
 
   return (
     <div className="fixed bottom-0 left-0 right-0 z-50 px-[24px]">
@@ -224,8 +235,11 @@ export default function PlayBar({
               {currentTime}
             </span>
 
-            <div className="relative h-[12px] flex-1">
-              <div className="absolute left-0 right-0 top-1/2 h-[3px] -translate-y-1/2 rounded-full bg-white" />
+            <div
+              className="relative h-[12px] flex-1 cursor-pointer"
+              onClick={handleSeekClick}
+            >
+              <div className="absolute left-0 right-0 top-1/2 h-[3px] -translate-y-1/2 rounded-full bg-white/50" />
 
               <div
                 className="absolute left-0 top-1/2 h-[3px] -translate-y-1/2 rounded-full bg-white"

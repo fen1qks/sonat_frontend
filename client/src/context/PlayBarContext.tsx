@@ -1,13 +1,12 @@
-import React, { createContext, useContext, useMemo, useRef, useState } from "react";
-
-export type Track = {
-  id: number | string;
-  title: string;
-  author: string;
-  cover?: string;
-  youtubeId?: string;
-  watchUrl?: string;
-};
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import type { Track } from "../types/track";
 
 type YouTubePlayerLike = {
   loadVideoById: (videoId: string) => void;
@@ -17,6 +16,7 @@ type YouTubePlayerLike = {
   getCurrentTime: () => number;
   getDuration: () => number;
   setVolume: (volume: number) => void;
+  destroy?: () => void;
 };
 
 type PlayerContextType = {
@@ -42,7 +42,9 @@ type PlayerContextType = {
   seekToPercent: (percent: number) => void;
   setVolume: (volume: number) => void;
 
-  playerRef: React.MutableRefObject<YouTubePlayerLike | null>;
+  youtubePlayerRef: React.MutableRefObject<YouTubePlayerLike | null>;
+  spotifyPlayerRef: React.MutableRefObject<SpotifyEmbedController | null>;
+  audioPlayerRef: React.MutableRefObject<HTMLAudioElement | null>;
 };
 
 const PlayerContext = createContext<PlayerContextType | undefined>(undefined);
@@ -52,6 +54,23 @@ function formatTime(totalSeconds: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = Math.floor(totalSeconds % 60);
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function parseTimeToSeconds(value: string): number {
+  if (!value || !value.includes(":")) return 0;
+
+  const parts = value.split(":").map(Number);
+  if (parts.some((part) => Number.isNaN(part))) return 0;
+
+  if (parts.length === 2) {
+    return parts[0] * 60 + parts[1];
+  }
+
+  if (parts.length === 3) {
+    return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  }
+
+  return 0;
 }
 
 export function PlayerProvider({ children }: { children: React.ReactNode }) {
@@ -65,160 +84,326 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const [progressPercent, setProgressPercent] = useState(0);
   const [volumePercent, setVolumePercent] = useState(100);
 
-  const playerRef = useRef<YouTubePlayerLike | null>(null);
+  const youtubePlayerRef = useRef<YouTubePlayerLike | null>(null);
+  const spotifyPlayerRef = useRef<SpotifyEmbedController | null>(null);
+  const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
 
-  function resetProgress() {
+  const resetProgress = useCallback(() => {
     setCurrentTime("0:00");
     setDuration("0:00");
     setProgressPercent(0);
-  }
+  }, []);
 
-  function playTrack(track: Track, tracks?: Track[]) {
-    let nextIndex = 0;
-    let nextQueue = queue;
+  const stopYouTubePlayer = useCallback(() => {
+    if (youtubePlayerRef.current) {
+      console.log("[PlayerContext] stopYouTubePlayer -> pauseVideo()");
+      youtubePlayerRef.current.pauseVideo();
+    }
+  }, []);
 
-    if (tracks && tracks.length > 0) {
-      nextQueue = tracks;
-      setQueue(tracks);
+  const stopSpotifyPlayer = useCallback(() => {
+    if (spotifyPlayerRef.current) {
+      console.log("[PlayerContext] stopSpotifyPlayer -> pause()");
+      spotifyPlayerRef.current.pause();
+    }
+  }, []);
 
-      nextIndex = tracks.findIndex(
-        (item) =>
-          String(item.id) === String(track.id) ||
-          item.youtubeId === track.youtubeId
-      );
+  const stopTelegramPlayer = useCallback(() => {
+    if (audioPlayerRef.current) {
+      console.log("[PlayerContext] stopTelegramPlayer -> pause()");
+      audioPlayerRef.current.pause();
+    }
+  }, []);
 
-      if (nextIndex < 0) nextIndex = 0;
+  const stopPlayersExcept = useCallback(
+    (sourceType?: Track["sourceType"] | null) => {
+      if (sourceType !== "youtube") {
+        stopYouTubePlayer();
+      }
+
+      if (sourceType !== "spotify") {
+        stopSpotifyPlayer();
+      }
+
+      if (sourceType !== "telegram") {
+        stopTelegramPlayer();
+      }
+    },
+    [stopSpotifyPlayer, stopTelegramPlayer, stopYouTubePlayer]
+  );
+
+  const pauseActivePlayer = useCallback(() => {
+    if (currentTrack?.sourceType === "youtube") {
+      stopYouTubePlayer();
+    }
+
+    if (currentTrack?.sourceType === "spotify") {
+      stopSpotifyPlayer();
+    }
+
+    if (currentTrack?.sourceType === "telegram") {
+      stopTelegramPlayer();
+    }
+  }, [
+    currentTrack?.sourceType,
+    stopSpotifyPlayer,
+    stopTelegramPlayer,
+    stopYouTubePlayer,
+  ]);
+
+  const playTrack = useCallback(
+    (track: Track, tracks?: Track[]) => {
+      console.log("[PlayerContext] playTrack called", {
+        track,
+        sourceType: track?.sourceType,
+        sourceId: track?.sourceId,
+        id: track?.id,
+        watchUrl: track?.watchUrl,
+        tracksLength: tracks?.length,
+      });
+
+      let nextQueue = queue;
+      let nextIndex = 0;
+      let nextTrack = track;
+
+      if (tracks && tracks.length > 0) {
+        nextQueue = tracks;
+        setQueue(tracks);
+
+        nextIndex = tracks.findIndex(
+          (item) =>
+            String(item.id) === String(track.id) ||
+            item.sourceId === track.sourceId
+        );
+
+        if (nextIndex < 0) nextIndex = 0;
+        nextTrack = tracks[nextIndex];
+      } else if (queue.length === 0) {
+        nextQueue = [track];
+        nextIndex = 0;
+        nextTrack = track;
+        setQueue(nextQueue);
+      } else {
+        const queueIndex = queue.findIndex(
+          (item) =>
+            String(item.id) === String(track.id) ||
+            item.sourceId === track.sourceId
+        );
+
+        if (queueIndex >= 0) {
+          nextIndex = queueIndex;
+          nextTrack = queue[queueIndex];
+        } else {
+          nextQueue = [track];
+          nextIndex = 0;
+          nextTrack = track;
+          setQueue(nextQueue);
+        }
+      }
+
+      stopPlayersExcept(nextTrack?.sourceType);
       setCurrentTrackIndex(nextIndex);
-      setCurrentTrack(tracks[nextIndex]);
-    } else if (queue.length === 0) {
-      nextQueue = [track];
-      setQueue([track]);
-      setCurrentTrackIndex(0);
-      setCurrentTrack(track);
-    } else {
-      setCurrentTrack(track);
-    }
-
-    setIsPlaying(true);
-    resetProgress();
-
-    const videoId =
-      (tracks && tracks.length > 0
-        ? nextQueue[nextIndex]?.youtubeId
-        : track.youtubeId) || "";
-
-    if (videoId && playerRef.current) {
-      playerRef.current.loadVideoById(videoId);
-      playerRef.current.playVideo();
-    }
-  }
-
-  function togglePlay() {
-    if (!currentTrack || !playerRef.current) return;
-
-    if (isPlaying) {
-      playerRef.current.pauseVideo();
-      setIsPlaying(false);
-    } else {
-      playerRef.current.playVideo();
+      setCurrentTrack(nextTrack);
       setIsPlaying(true);
-    }
-  }
+      resetProgress();
+    },
+    [queue, resetProgress, stopPlayersExcept]
+  );
 
-  function playNext() {
+  const togglePlay = useCallback(() => {
+    if (!currentTrack) return;
+
+    console.log("[PlayerContext] togglePlay called", {
+      currentTrack,
+      sourceType: currentTrack.sourceType,
+      isPlaying,
+    });
+
+    if (!isPlaying) {
+      stopPlayersExcept(currentTrack.sourceType);
+    }
+
+    setIsPlaying((prev) => !prev);
+  }, [currentTrack, isPlaying, stopPlayersExcept]);
+
+  const playNext = useCallback(() => {
     if (queue.length === 0) return;
 
-    const nextIndex = currentTrackIndex + 1 >= queue.length ? 0 : currentTrackIndex + 1;
+    const isLastTrack = currentTrackIndex >= queue.length - 1;
+
+    if (isLastTrack) {
+      console.log("[PlayerContext] playNext -> end of queue, stop");
+      setIsPlaying(false);
+      pauseActivePlayer();
+      return;
+    }
+
+    const nextIndex = currentTrackIndex + 1;
     const nextTrack = queue[nextIndex];
 
+    if (!nextTrack) return;
+
+    console.log("[PlayerContext] playNext resolved", {
+      nextTrack,
+      sourceType: nextTrack?.sourceType,
+      sourceId: nextTrack?.sourceId,
+      watchUrl: nextTrack?.watchUrl,
+    });
+
+    stopPlayersExcept(nextTrack.sourceType);
     setCurrentTrack(nextTrack);
     setCurrentTrackIndex(nextIndex);
     setIsPlaying(true);
     resetProgress();
+  }, [queue, currentTrackIndex, pauseActivePlayer, resetProgress, stopPlayersExcept]);
 
-    if (nextTrack.youtubeId && playerRef.current) {
-      playerRef.current.loadVideoById(nextTrack.youtubeId);
-      playerRef.current.playVideo();
-    }
-  }
-
-  function playPrev() {
+  const playPrev = useCallback(() => {
     if (queue.length === 0) return;
+    if (currentTrackIndex <= 0) {
+      console.log("[PlayerContext] playPrev -> start of queue");
+      return;
+    }
 
-    const prevIndex = currentTrackIndex - 1 < 0 ? queue.length - 1 : currentTrackIndex - 1;
+    const prevIndex = currentTrackIndex - 1;
     const prevTrack = queue[prevIndex];
 
+    if (!prevTrack) return;
+
+    console.log("[PlayerContext] playPrev resolved", {
+      prevTrack,
+      sourceType: prevTrack?.sourceType,
+      sourceId: prevTrack?.sourceId,
+      watchUrl: prevTrack?.watchUrl,
+    });
+
+    stopPlayersExcept(prevTrack.sourceType);
     setCurrentTrack(prevTrack);
     setCurrentTrackIndex(prevIndex);
     setIsPlaying(true);
     resetProgress();
+  }, [queue, currentTrackIndex, resetProgress, stopPlayersExcept]);
 
-    if (prevTrack.youtubeId && playerRef.current) {
-      playerRef.current.loadVideoById(prevTrack.youtubeId);
-      playerRef.current.playVideo();
-    }
-  }
+  const seekToPercent = useCallback(
+    (percent: number) => {
+      if (!currentTrack) return;
 
-  function seekToPercent(percent: number) {
-    if (!playerRef.current) return;
+      console.log("[PlayerContext] seekToPercent called", {
+        percent,
+        sourceType: currentTrack.sourceType,
+      });
 
-    const durationSeconds = playerRef.current.getDuration();
-    if (!durationSeconds) return;
+      if (currentTrack.sourceType === "youtube" && youtubePlayerRef.current) {
+        const durationSeconds = youtubePlayerRef.current.getDuration();
+        if (!durationSeconds) return;
 
-    const clamped = Math.max(0, Math.min(100, percent));
-    const targetSeconds = (clamped / 100) * durationSeconds;
+        const clamped = Math.max(0, Math.min(100, percent));
+        const targetSeconds = (clamped / 100) * durationSeconds;
 
-    playerRef.current.seekTo(targetSeconds, true);
-    setCurrentTime(formatTime(targetSeconds));
-    setDuration(formatTime(durationSeconds));
-    setProgressPercent(clamped);
-  }
+        youtubePlayerRef.current.seekTo(targetSeconds, true);
+        setCurrentTime(formatTime(targetSeconds));
+        setDuration(formatTime(durationSeconds));
+        setProgressPercent(clamped);
+        return;
+      }
 
-  function setVolume(volume: number) {
-  const clamped = Math.max(0, Math.min(100, volume));
-  setVolumePercent(clamped);
+      if (currentTrack.sourceType === "spotify" && spotifyPlayerRef.current) {
+        const clamped = Math.max(0, Math.min(100, percent));
+        const totalSeconds = parseTimeToSeconds(duration);
 
-  if (playerRef.current) {
-    playerRef.current.setVolume(clamped);
-  }
-}
+        if (totalSeconds > 0) {
+          spotifyPlayerRef.current.seek((clamped / 100) * totalSeconds);
+          setProgressPercent(clamped);
+        }
+        return;
+      }
 
-const value = useMemo(
-  () => ({
-    currentTrack,
-    queue,
-    currentTrackIndex,
-    isPlaying,
-    currentTime,
-    duration,
-    progressPercent,
-    volumePercent,
-    setCurrentTime,
-    setDuration,
-    setProgressPercent,
-    setIsPlaying,
-    setVolumePercent,
-    playTrack,
-    togglePlay,
-    playNext,
-    playPrev,
-    seekToPercent,
-    setVolume,
-    playerRef,
-  }),
-  [
-    currentTrack,
-    queue,
-    currentTrackIndex,
-    isPlaying,
-    currentTime,
-    duration,
-    progressPercent,
-    volumePercent,
-  ]
-);
+      if (currentTrack.sourceType === "telegram" && audioPlayerRef.current) {
+        const totalSeconds = audioPlayerRef.current.duration;
 
-  return <PlayerContext.Provider value={value}>{children}</PlayerContext.Provider>;
+        if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) {
+          return;
+        }
+
+        const clamped = Math.max(0, Math.min(100, percent));
+        const targetSeconds = (clamped / 100) * totalSeconds;
+
+        audioPlayerRef.current.currentTime = targetSeconds;
+        setCurrentTime(formatTime(targetSeconds));
+        setDuration(formatTime(totalSeconds));
+        setProgressPercent(clamped);
+      }
+    },
+    [currentTrack, duration]
+  );
+
+  const setVolume = useCallback(
+    (volume: number) => {
+      const clamped = Math.max(0, Math.min(100, volume));
+      setVolumePercent(clamped);
+
+      console.log("[PlayerContext] setVolume called", {
+        volume,
+        clamped,
+        sourceType: currentTrack?.sourceType,
+      });
+
+      if (currentTrack?.sourceType === "youtube" && youtubePlayerRef.current) {
+        youtubePlayerRef.current.setVolume(clamped);
+      }
+
+      if (currentTrack?.sourceType === "telegram" && audioPlayerRef.current) {
+        audioPlayerRef.current.volume = clamped / 100;
+      }
+    },
+    [currentTrack]
+  );
+
+  const value = useMemo(
+    () => ({
+      currentTrack,
+      queue,
+      currentTrackIndex,
+      isPlaying,
+      currentTime,
+      duration,
+      progressPercent,
+      volumePercent,
+      setCurrentTime,
+      setDuration,
+      setProgressPercent,
+      setIsPlaying,
+      setVolumePercent,
+      playTrack,
+      togglePlay,
+      playNext,
+      playPrev,
+      seekToPercent,
+      setVolume,
+      youtubePlayerRef,
+      spotifyPlayerRef,
+      audioPlayerRef,
+    }),
+    [
+      currentTrack,
+      queue,
+      currentTrackIndex,
+      isPlaying,
+      currentTime,
+      duration,
+      progressPercent,
+      volumePercent,
+      playTrack,
+      togglePlay,
+      playNext,
+      playPrev,
+      seekToPercent,
+      setVolume,
+    ]
+  );
+
+  return (
+    <PlayerContext.Provider value={value}>{children}</PlayerContext.Provider>
+  );
 }
 
 export function usePlayer() {
